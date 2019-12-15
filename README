@@ -1,0 +1,83 @@
+Имеем:
+Простейший веб-сервис на Flask, который на запрос ping отвечает pong
+Машину с запущенными docker, minikube и kubectl.
+В репозитории в папке app/ находится само приложение и Dockerfile для создания образа.
+В корне лежат конфигурационные файлы для развертывания сервиса в k8s
+
+Приложение докеризируем и отправляем в Docker Hub:
+yaroslav@HL001:~/devtask$ sudo docker build -t meth027/python-flask:v1.0 .
+yaroslav@HL001:~/devtask$ docker push meth027/python-flask:v1.0
+
+Для поддержания безотказной работы сервиса будем использовать два пода.
+Поднимем load-balancer для балансировки нагрузки между ними:
+yaroslav@HL001:~/devtask$ kubectl create -f load-balancer.yaml 
+service/load-balancer created
+
+yaroslav@HL001:~/devtask$ kubectl get svc
+NAME            TYPE           CLUSTER-IP     EXTERNAL-IP   PORT(S)          AGE
+kubernetes      ClusterIP      10.96.0.1      <none>        443/TCP          84m
+load-balancer   LoadBalancer   10.96.99.200   <pending>     5000:31404/TCP   19s
+
+yaroslav@HL001:~/devtask$ minikube service list
+|-------------|---------------|-----------------------------|-----|
+|  NAMESPACE  |     NAME      |         TARGET PORT         | URL |
+|-------------|---------------|-----------------------------|-----|
+| default     | kubernetes    | No node port                |
+| default     | load-balancer | http://192.168.99.100:31404 |
+| kube-system | kube-dns      | No node port                |
+|-------------|---------------|-----------------------------|-----|
+
+Создадим конфиг деплоймента и раскатаем:
+yaroslav@HL001:~/devtask$ kubectl apply -f deployment.yaml 
+deployment.apps/python-flask created
+
+yaroslav@HL001:~/devtask$ kubectl get pods
+NAME                            READY   STATUS    RESTARTS   AGE
+python-flask-5bc7844fdd-p89rv   1/1     Running   0          45s
+python-flask-5bc7844fdd-rbqzd   1/1     Running   0          45s
+Видим что поды поднялись
+yaroslav@HL001:~/devtask$ curl 192.168.99.100:31404/ping
+pong...
+и сервис работает
+
+Внесем изменение в код приложения и соберем образ:
+yaroslav@HL001:~/devtask/app$ sudo docker build -t meth027/python-flask:v1.1 . 
+yaroslav@HL001:~/devtask/app$ sudo docker push meth027/python-flask:v1.1
+
+Запустим новый деплоймент с другим образом не забыв при этом поставить флаг --record для отслеживания изменений:
+yaroslav@HL001:~/devtask$ kubectl apply -f deployment-update.yaml --record
+deployment.apps/python-flask configured
+
+yaroslav@HL001:~/devtask$ kubectl rollout status deployment python-flask
+deployment "python-flask" successfully rolled out
+
+yaroslav@HL001:~/devtask$ kubectl get pods
+NAME                           READY   STATUS    RESTARTS   AGE
+python-flask-9dcb68f66-28nzv   1/1     Running   0          112s
+python-flask-9dcb68f66-mptcw   1/1     Running   0          111s
+Сервис бесшовно обновился и работает:
+yaroslav@HL001:~$ curl 192.168.99.100:31404/ping
+pong...BUT NOW WITH ERRORyaroslav@HL001:~$
+
+Однако, мы не хотим видеть надпись об ошибке, поэтому запустим процедуру отката:
+yaroslav@HL001:~/devtask$ kubectl rollout history deployment python-flask
+deployment.apps/python-flask 
+REVISION  CHANGE-CAUSE
+1         <none>
+2         kubectl apply --filename=deployment-update.yaml --record=true
+
+
+yaroslav@HL001:~/devtask$ kubectl rollout undo deployment python-flask --to-revision=1
+deployment.apps/python-flask rolled back
+
+yaroslav@HL001:~/devtask$ kubectl rollout status deployment python-flask
+deployment "python-flask" successfully rolled out
+
+yaroslav@HL001:~/devtask$ kubectl get pods
+NAME                            READY   STATUS    RESTARTS   AGE
+python-flask-5bc7844fdd-chp58   1/1     Running   0          82s
+python-flask-5bc7844fdd-r94jr   1/1     Running   0          81s
+
+Откатились к прежней версии без простоя:
+yaroslav@HL001:~$ curl 192.168.99.100:31404/ping
+pong...yaroslav@HL001:~$ 
