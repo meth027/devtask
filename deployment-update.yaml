@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: python-flask
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: dev-app
+  minReadySeconds: 15
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: 
+      maxUnavailable: 1
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: dev-app
+    spec:
+      containers:
+        - image: meth027/python-flask:v1.1
+          imagePullPolicy: Always
+          name: python-flask
+          ports:
+            - containerPort: 5000
